@@ -1,135 +1,101 @@
-import { of, fromEvent, interval, merge, Observable} from 'rxjs'; 
-import { map, filter, debounceTime, scan, take } from 'rxjs/operators';
-import { gameSize, empty, player, shot, invader} from './constants';
-import { paint } from './html-renderer';
+import { ActionType, Display, gameSize, Direction } from "./constants";
+import { Position, Invader, State, Action } from "./interfaces";
+import { paint } from "./html-renderer";
 
-/*
-const moves = fromEvent<KeyboardEvent>(document, 'keydown')
-const moves_filtered = moves.pipe(filter(x=> x.code.startsWith('Arrow'))) // or == ArrowLeft, ArrowRight
-const moves_filtered_debounced = moves.pipe(debounceTime(10))
-*/
+import { of } from "rxjs";
+import {} from "rxjs/operators";
 
-const moves = fromEvent<KeyboardEvent>(document, 'keydown').pipe(
-  filter(x=> x.code == 'ArrowLeft' || x.code == 'ArrowRight'),
-  debounceTime(10)
-)
-
-const shots = fromEvent<KeyboardEvent>(document, 'keydown').pipe(
-  filter(x=> x.code.startsWith('Space')),
-  debounceTime(10)
-)
-
-//moves.subscribe(x => console.log(x.code));
-//shots.subscribe(x => console.log("shot!"));
-
-interface Pos {
-  x: number;
-  y: number;
-}
-
-interface Monster {
-  pos: Pos;
-  direction: number;
-}
-
-interface State {
-  playerX: number;
-  shots: Pos[];
-  monsters: Monster[];
-}
-
-interface Action {
-  action: string;
-  obj: any;
-}
-
-const initialState : State = {
-  playerX: gameSize/2,
-  shots: [],
-  monsters: []
+const mapFromState = (state: State): number[][] => {
+  var game = Array(gameSize)
+    .fill(Display.empty)
+    .map(e => Array(gameSize).fill(Display.empty));
+  state.shots.forEach(s => (game[s.y][s.x] = Display.shot));
+  state.invaders.forEach(m => (game[m.pos.y][m.pos.x] = Display.invader));
+  state.collisions.forEach(c => (game[c.y][c.x] = Display.collision));
+  game[gameSize - 1][state.playerX] = Display.player;
+  return game;
 };
 
-class SpaceInvaders {
+const collide = (e1, e2) => e1.x === e2.x && e1.y === e2.y;
 
-  private gameLoop: Observable<State>;
+const positionUpdate = (x: number, input: KeyboardEvent): number => {
+  x = input === Direction.Left ? x - 1 : x + 1;
+  return Math.min(Math.max(x, 0), gameSize);
+};
 
-  constructor() {
-    const moves = fromEvent<KeyboardEvent>(document, 'keydown').pipe(
-    filter(x=> x.code == 'ArrowLeft' || x.code == 'ArrowRight'),
-    debounceTime(10));
-
-    const shots = fromEvent<KeyboardEvent>(document, 'keydown').pipe(
-    filter(x=> x.code.startsWith('Space')),
-    debounceTime(10));
-
-    const positionUpdate = (x: number, input: KeyboardEvent): number => {
-      x = input.code == 'ArrowLeft' ? x-1 : x+1;
-      return Math.min(Math.max(x, 0), gameSize)
-    };
-
-    const gameUpdate = (state: State, input: Action): State => {
-      if (input.action == 'move')
-        state.playerX = positionUpdate(state.playerX, input.obj);
-      else if (input.action == 'shot')
-        state.shots.push(<Pos>{x:state.playerX, y:gameSize-1});
-      else if (input.action == 'monster')
-        state.monsters.push(input.obj)
-      else if (input.action == 'refresh')
-      {
-        state.shots.forEach(p => p.y = p.y - 1);
-        state.shots = state.shots.filter(p => p.y >= 0);
-        state.monsters.forEach(m => {
-          if (m.pos.x + m.direction < 0 || m.pos.x + m.direction == gameSize -1) {
-            m.pos.y++; m.direction = -m.direction;
-          }   
-          m.pos.x = m.pos.x + m.direction
-          console.log(m.pos)
-        });
-        state.monsters = state.monsters.filter(m => m.pos.y >= 0 && m.pos.y < gameSize);
-      }
-      console.log(state.playerX)
-      return state;
-    };
-
-    const monsterGen = interval(1000).pipe(
-      map (x =>  <Action>{ action:'monster', obj:<Monster>{pos: {x:gameSize/2, y:0}, direction: 1} } ),
-      take(20)
-    );
-
-    this.gameLoop = merge(
-      moves.pipe(map(x => <Action>{ action:'move', obj:x })),
-      shots.pipe(map(x => <Action>{ action:'shot', obj:x })),
-      interval(1000).pipe(map(x => <Action>{ action:"refresh", obj:x } )),
-      monsterGen
-    ).pipe(scan(gameUpdate, initialState));
-
+const invadersPositionUpdate = (inv: Invader): void => {
+  if (inv.pos.x + inv.direction < 0 || inv.pos.x + inv.direction == gameSize) {
+    inv.pos.y++;
+    inv.direction = -inv.direction;
   }
+  inv.pos.x += inv.direction;
+};
 
-  public start(playerLives: number) {
-    this.gameLoop.subscribe(state => paint(this.getGame(state, playerLives, 0, false)));
-  }
-
-  public end() {
-  }
-
-  private getGame(state: State): number[][] {
-    var game: number[][] = [  
-    [gameSize],  
-    [gameSize]  
-    ];
-    for (var i = 0; i < gameSize; ++i)
-    {
-      game[i] = [];
-      for (var j = 0; j < gameSize; ++j)
-        game[i][j] = empty;
+const gameUpdate = (state: State, input: Action): State => {
+  switch (input.action) {
+    case ActionType.Move:
+      state.playerX = positionUpdate(state.playerX, input.payload);
+      break;
+    case ActionType.Shot:
+      state.shots.push(<Position>{ x: state.playerX, y: gameSize - 1 });
+      break;
+    case ActionType.InvaderPop:
+      state.invaders.push(input.payload);
+      break;
+    case ActionType.Refresh: {
+      state.shots.forEach(p => (p.y = p.y - 1));
+      state.shots = state.shots.filter(p => p.y >= 0);
+      state.collisions = state.shots.filter(s =>
+        state.invaders.find(m => collide(s, m.pos))
+      );
+      state.invaders = state.invaders.filter(
+        m => !state.collisions.find(c => collide(c, m.pos))
+      );
+      state.shots = state.shots.filter(
+        s => !state.collisions.find(c => collide(c, s))
+      );
+      state.score += state.collisions.length * 10;
+      state.invaders.map(invadersPositionUpdate);
+      state.invaders = state.invaders.filter(
+        m => m.pos.y >= 0 && m.pos.y < gameSize
+      );
+      break;
     }
-
-    game[gameSize-1][state.playerX] = player
-    state.shots.forEach(s => game[s.y][s.x] = shot)
-    state.monsters.forEach(m => game[m.pos.y][m.pos.x] = invader)
-    return game;
   }
-}
+  return state;
+};
 
-const game = new SpaceInvaders();
-game.start(3);
+/* Write an observables which map keyEvents to Actions like you did in exercice 2
+  for Left  emit <Action>{ action:ActionType.Move, payload: Direction.Left }
+  for Right emit <Action>{ action:ActionType.Move, payload: Direction.Right }
+  for Shot  emit <Action>{ action:ActionType.Shot, payload: Position{x:? y:?} }
+
+  the spaceship cannot go faster than 1 move every 100 ms
+  the spaceship blaster maximum rate is 3 times per second
+ */
+
+// code it here
+
+const initialState: State = {
+  playerX: gameSize / 2,
+  shots: [],
+  invaders: [],
+  collisions: [],
+  score: 0
+};
+
+/* Modify gameloop$ to call game update on every event
+*/
+
+const gameloop$ = of(initialState);
+gameloop$.subscribe(state => paint(mapFromState(state), 1, state.score, false));
+
+/* find a way to refresh the visualisation every 100ms
+  emit <Action>{ action:ActionType.Refresh, payload: time }
+*/
+
+
+
+/* add a new events to create new invaders every 300 ms and limit the number to 50 invaders
+  emit <Action>{ action:ActionType.InvaderPop, payload: Position{x:? y:?} }
+*/
